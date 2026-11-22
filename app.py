@@ -1,23 +1,27 @@
-import os, json, urllib.request
+import os, socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-def fetch(url):
+def probe(host, port):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "egress-test"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.read().decode("utf-8", "replace")
+        s = socket.create_connection((host, port), timeout=3)
+        s.settimeout(3)
+        banner = s.recv(100).decode("utf-8", "replace").strip()
+        s.close()
+        return "REACHABLE banner=" + banner
     except Exception as e:
-        return "ERROR: " + str(e)
+        return "FAIL: " + str(e)
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = "EGRESS CHECK\n\nipinfo.io:\n" + fetch("https://ipinfo.io/json") + "\n\nip-api.com:\n" + fetch("http://ip-api.com/json") + "\n"
-        data = body.encode()
+        lines = ["PRIVATE NETWORK PROBE", ""]
+        for ip in ("10.81.0.10", "10.81.0.13"):
+            lines.append(ip + ":22 -> " + probe(ip, 22))
+        body = ("\n".join(lines) + "\n").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(body)
     def log_message(self, *a):
         pass
 

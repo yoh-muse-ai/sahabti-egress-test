@@ -1,28 +1,50 @@
-import os, socket
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os, asyncio
+from websockets.asyncio.server import serve
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
-def probe(host, port):
-    try:
-        s = socket.create_connection((host, port), timeout=3)
-        s.settimeout(3)
-        banner = s.recv(100).decode("utf-8", "replace").strip()
-        s.close()
-        return "REACHABLE banner=" + banner
-    except Exception as e:
-        return "FAIL: " + str(e)
+TARGETS = {"/vm1": ("10.81.0.10", 22), "/vm2": ("10.81.0.13", 22)}
 
-class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        lines = ["PRIVATE NETWORK PROBE", ""]
-        for ip in ("10.81.0.10", "10.81.0.13"):
-            lines.append(ip + ":22 -> " + probe(ip, 22))
-        body = ("\n".join(lines) + "\n").encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *a):
-        pass
+async def handler(ws):
+    path = ws.request.path.split("?")[0]
+    host, port = TARGETS.get(path, TARGETS["/vm1"])
+    reader, writer = await asyncio.open_connection(host, port)
+    async def tcp_to_ws():
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    break
+                await ws.send(data)
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    async def ws_to_tcp():
+        try:
+            async for msg in ws:
+                if isinstance(msg, str):
+                    msg = msg.encode()
+                writer.write(msg)
+                await writer.drain()
+        except Exception:
+            pass
+        try:
+            writer.close()
+        except Exception:
+            pass
+    await asyncio.gather(tcp_to_ws(), ws_to_tcp())
 
-HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), H).serve_forever()
+async def process_request(connection, request):
+    if request.headers.get("Upgrade", "").lower() != "websocket":
+        return Response(200, "OK", Headers([("Content-Type", "text/plain")]), b"relay up\n")
+    return None
+
+async def main():
+    port = int(os.environ.get("PORT", "8080"))
+    async with serve(handler, "0.0.0.0", port, process_request=process_request, max_size=None):
+        await asyncio.Future()
+
+asyncio.run(main())
